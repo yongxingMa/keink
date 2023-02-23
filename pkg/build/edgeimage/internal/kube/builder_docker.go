@@ -76,8 +76,6 @@ func (b *dockerBuilder) Build() (kube.Bits, error) {
 	// binaries we want to build
 	what := []string{
 		// binaries we use directly
-		"keadm",
-		"cloudcore",
 		"edgecore",
 	}
 
@@ -96,9 +94,6 @@ func (b *dockerBuilder) Build() (kube.Bits, error) {
 	binDir := filepath.Join(b.kubeEdgeRoot,
 		"_output", "local", "bin",
 	)
-	crdDir := filepath.Join(b.kubeEdgeRoot,
-		"build", "crds",
-	)
 
 	// use edgecore.service and cloudcore.service file under this repo
 	serviceDir := filepath.Join(cwd,
@@ -108,21 +103,10 @@ func (b *dockerBuilder) Build() (kube.Bits, error) {
 	return &bits{
 		binaryPaths: []string{
 			// binaries for kubeedge
-			filepath.Join(filepath.Join(binDir, "keadm")),
-			filepath.Join(filepath.Join(binDir, "cloudcore")),
 			filepath.Join(filepath.Join(binDir, "edgecore")),
-
-			// CRDs required by KubeEdge
-			filepath.Join(crdDir, "devices", "devices_v1alpha2_device.yaml"),
-			filepath.Join(crdDir, "devices", "devices_v1alpha2_devicemodel.yaml"),
-			filepath.Join(crdDir, "reliablesyncs", "cluster_objectsync_v1alpha1.yaml"),
-			filepath.Join(crdDir, "reliablesyncs", "objectsync_v1alpha1.yaml"),
-			filepath.Join(crdDir, "router", "router_v1_rule.yaml"),
-			filepath.Join(crdDir, "router", "router_v1_ruleEndpoint.yaml"),
 
 			// cloudcore.service and edgecore.service
 			filepath.Join(serviceDir, "edgecore.service"),
-			filepath.Join(serviceDir, "cloudcore.service"),
 		},
 	}, nil
 }

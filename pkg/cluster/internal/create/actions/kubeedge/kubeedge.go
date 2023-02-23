@@ -19,9 +19,7 @@ package kubeedge
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"sigs.k8s.io/kind/pkg/cluster/nodes"
 	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
@@ -53,20 +51,11 @@ func NewAction(address string, containerMode bool) actions.Action {
 
 // Execute runs the action
 func (a *Action) Execute(ctx *actions.ActionContext) error {
-	ctx.Status.Start("Starting KubeEdge 📜")
+	ctx.Status.Start("Starting KubeEdge Edgecore 📜")
 	defer ctx.Status.End(false)
 
 	if err := a.preProcess(ctx); err != nil {
 		return fmt.Errorf("failed do pre process: %v", err)
-	}
-
-	// How to start cloudcore and edgecore localhost
-	// The below logic is from kubeedge hack/local-up-kubeedge.sh
-	// or from `keadm init/join` logic
-
-	// bootstrap cloudcore: this operation should be on control-plane
-	if err := a.BootstrapCloudCore(ctx); err != nil {
-		return err
 	}
 
 	// bootstrap edgecore: this operation should be on edge-node
@@ -144,112 +133,6 @@ func (a *Action) preProcess(ctx *actions.ActionContext) error {
 	return nil
 }
 
-func (a *Action) BootstrapCloudCore(ctx *actions.ActionContext) error {
-	allNodes, err := ctx.Nodes()
-	if err != nil {
-		return err
-	}
-
-	node, err := nodeutils.BootstrapControlPlaneNode(allNodes)
-	if err != nil {
-		return err
-	}
-
-	if a.ContainerMode {
-		if err := a.startCloudcoreWithKeadm(ctx, node); err != nil {
-			return fmt.Errorf("failed to start cloudcore with keadm: %v", err)
-		}
-	} else {
-		if err := a.startCloudcore(ctx, node); err != nil {
-			return fmt.Errorf("failed to start cloudcore: %v", err)
-		}
-	}
-
-	return nil
-}
-
-// TODO: using keadm need we package kubeedge/cloudcore image to the kubeedge/node image
-func (a *Action) startCloudcoreWithKeadm(ctx *actions.ActionContext, node nodes.Node) error {
-	// master nodes support running cloudcore
-	// TODO: due to cloudcore can be deployed on word nodes, how to access them when edge node register(dynamic IP address)
-
-	// use keadm init to install cloudcore in container mode
-	// cloudcore svc use NodePort type, to enable edgecore connect to cloudcore, we may add the below routes on the host
-	//iptables -t nat -A PREROUTING -d ${advertise-address} -p tcp --dport 10000 -j DNAT --to-destination ${NODE_IP}:30000
-	//iptables -t nat -A PREROUTING -d ${advertise-address} -p tcp --dport 10002 -j DNAT --to-destination ${NODE_IP}:30002
-	startCmd := fmt.Sprintf("keadm init --advertise-address=%s --profile version=v1.12.0 --kube-config /etc/kubernetes/admin.conf --set cloudCore.hostNetWork=false", a.AdvertiseAddress)
-	cmd := node.Command("bash", "-c", startCmd)
-	lines, err := exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return fmt.Errorf("failed to keadm init: %v", err)
-	}
-
-	return getToken(node)
-}
-
-// startCloudcore on control plane
-func (a *Action) startCloudcore(ctx *actions.ActionContext, node nodes.Node) error {
-	// create ns kubeedge
-	cmd := node.Command("kubectl", "create", "ns", "kubeedge")
-	lines, err := exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return fmt.Errorf("failed to create ns kubeedge: %v", err)
-	}
-
-	// create CRDs
-	crds := []string{
-		"devices_v1alpha2_device.yaml",
-		"devices_v1alpha2_devicemodel.yaml",
-		"cluster_objectsync_v1alpha1.yaml",
-		"objectsync_v1alpha1.yaml",
-		"router_v1_rule.yaml",
-		"router_v1_ruleEndpoint.yaml",
-	}
-
-	// CRDs are copied to image when build image
-	for _, crd := range crds {
-		crdPath := filepath.Join("/etc/kubeedge/crds/", crd)
-		cmd = node.Command("kubectl", "create", "-f", crdPath)
-		lines, err := exec.CombinedOutputLines(cmd)
-		ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-		if err != nil {
-			return fmt.Errorf("failed to create CRD %s: %v", crd, err)
-		}
-	}
-
-	// generate config
-	cmd = node.Command("bash", "-c", "cloudcore --defaultconfig >  /etc/kubeedge/config/cloudcore.yaml")
-	lines, err = exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return fmt.Errorf("failed to generate cloudcore config: %v", err)
-	}
-
-	cmd = node.Command("bash", "-c", fmt.Sprintf(`sed -i -e "s|kubeConfig: .*|kubeConfig: %s|g" /etc/kubeedge/config/cloudcore.yaml`, "/etc/kubernetes/admin.conf"))
-	lines, err = exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return fmt.Errorf("failed to modify kubeconfig: %v", err)
-	}
-	cmd = node.Command("bash", "-c", `sed -i '/iptablesManager:/{n;s/true/false/;}' /etc/kubeedge/config/cloudcore.yaml`)
-	lines, err = exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return fmt.Errorf("failed to modify kubeconfig: %v", err)
-	}
-
-	cmd = node.Command("bash", "-c", "systemctl daemon-reload && systemctl enable cloudcore && systemctl start cloudcore")
-	lines, err = exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return fmt.Errorf("failed to start cloudcore: %v", err)
-	}
-
-	return getToken(node)
-}
-
 // BootstrapEdgecore
 func (a *Action) BootstrapEdgecore(ctx *actions.ActionContext) error {
 	allNodes, err := ctx.Nodes()
@@ -298,9 +181,6 @@ func (a *Action) joinEdgeNodes(
 	for _, node := range edgeNodes {
 		node := node // capture loop variable
 		fns = append(fns, func() error {
-			if a.ContainerMode {
-				return a.runStartEdgecoreWithKeadm(ctx, node)
-			}
 			return a.runStartEdgecore(ctx, node)
 		})
 	}
@@ -388,35 +268,7 @@ func (a *Action) runStartEdgecore(ctx *actions.ActionContext, node nodes.Node) e
 		return fmt.Errorf("failed to start cloudcore: %v", err)
 	}
 
-	return waitNodeReady(ctx, node.String())
-}
-
-// runStartEdgecoreWithKeadm executes kubeadm join command
-func (a *Action) runStartEdgecoreWithKeadm(ctx *actions.ActionContext, node nodes.Node) error {
-	if err := stopKubelet(ctx, node); err != nil {
-		return errors.Wrap(err, "failed to stop kubelet")
-	}
-
-	// rm /etc/kubeedge directory, or keadm join will report error
-	cmd := node.Command("bash", "-c", "rm -rf /etc/kubeedge")
-	lines, err := exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return fmt.Errorf("failed to cleanup directory /etc/kubeedge: %v", err)
-	}
-
-	// not start MQTT conainer, error: E0728 01:07:37.717267    1429 remote_runtime.go:116] "RunPodSandbox from runtime service failed" err="rpc error: code = Unknown
-	// desc = failed to reserve sandbox name \"mqtt___0\": name \"mqtt___0\" is reserved for \"264c9ad4f0be7271711a21b0c89f958da582e1869a3b18fb07dd719b16989595\""
-	// TODO: debug why edgecore segmentfault with nothing
-	joinCmd := fmt.Sprintf("keadm join --cloudcore-ipport %s --certport 30002 --token %s --remote-runtime-endpoint unix:///var/run/containerd/containerd.sock --runtimetype remote --with-mqtt=false", controlPlaneIP+":30000", KubeEdgeToken)
-	cmd = node.Command("bash", "-c", joinCmd)
-	lines, err = exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return fmt.Errorf("failed to join edge: %v", err)
-	}
-
-	return waitNodeReady(ctx, node.String())
+	return nil
 }
 
 // stopKubelet stop kubelet service and delete kubelet node
@@ -450,55 +302,5 @@ func stopKubelet(ctx *actions.ActionContext, node nodes.Node) error {
 		return errors.Wrap(err, "failed to delete node")
 	}
 
-	return nil
-}
-
-// waitNodeReady wait for edge node Ready
-func waitNodeReady(ctx *actions.ActionContext, node string) error {
-	allNodes, err := ctx.Nodes()
-	if err != nil {
-		return err
-	}
-
-	// master node/ control plane
-	controlPlane, err := nodeutils.BootstrapControlPlaneNode(allNodes)
-	if err != nil {
-		return err
-	}
-
-	s := fmt.Sprintf("while true; do sleep 3; kubectl get nodes | grep %s && break; done", node)
-	cmd := controlPlane.Command("bash", "-c", s)
-	lines, err := exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return errors.Wrap(err, "node not exist")
-	}
-
-	s = fmt.Sprintf("kubectl wait --for=condition=Ready node/%s --timeout=120s", node)
-	cmd = controlPlane.Command("bash", "-c", s)
-	lines, err = exec.CombinedOutputLines(cmd)
-	ctx.Logger.V(3).Info(strings.Join(lines, "\n"))
-	if err != nil {
-		return errors.Wrap(err, "failed to wait node Ready")
-	}
-
-	return nil
-}
-
-// getToken on master node
-func getToken(node nodes.Node) error {
-	// sleep 20s to wait cloudcore start successfully
-	// TODO: think a better way to do sync operation
-	time.Sleep(20 * time.Second)
-	cmd := node.Command("bash", "-c", `kubectl get secret -nkubeedge tokensecret -o=jsonpath='{.data.tokendata}' | base64 -d`)
-	token, err := exec.Output(cmd)
-	if err != nil {
-		return fmt.Errorf("failed to get tokensecret: %v", err)
-	}
-	if string(token) == "" {
-		return fmt.Errorf("tokensecret cannot be empty")
-	}
-
-	KubeEdgeToken = string(token)
 	return nil
 }
